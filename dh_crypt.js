@@ -146,6 +146,7 @@ ptext = JSON.stringify({
 
 // crypto use crypto 
 let iv3 = crypto.randomBytes(8);
+skey = crypto.createHmac("sha256",iv3).update(sskey).digest();
 const cipher = crypto.createCipheriv(ALGO, skey, iv3, COPTION);
 
 let crypted = cipher.update(ptext, 'utf8', 'hex');
@@ -164,6 +165,7 @@ console.log("Server Response:", sresult3);
 // sjcl client decrypt
 // decrypted use sjcl
 let [etext4,iv4] = sresult3.split(",");
+ckey = new sjcl.misc.hmac(sjcl.codec.base64.toBits(iv4)).encrypt(cskey);
 
 cobject = JSON.stringify({ ...CTEMPLE, ...{
     iv: iv4,
