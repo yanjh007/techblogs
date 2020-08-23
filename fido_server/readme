@@ -1,1 +1,17 @@
 fido server side codes.
+
+wauth.js 是一个模型文件，包括了接口定义和Webauthn的信息处理代码方法。
+
+接口定义基于fastify，调用setRoute。
+标准辅助函数基于./models/index的方法，包括 handleReq。
+
+需要外部依赖
+crypto
+cbor      
+iso_3166_1
+@fidm/x509
+
+需要库依赖
+db_pos3
+b64url
+secret 
