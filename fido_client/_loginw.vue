@@ -23,8 +23,7 @@
 import { setRouter } from '@/routers/index'
 import { setTimeout } from 'timers'
 import { getUserStore } from '@/utils/auth' 
-import { wlogin, wresponse, wuinfo } from '@/api/auth'
-import { decodeCred, decodeAssert, packPubkey, getWinfo} from '@/utils/webauthn'
+import { wauthAuth, getWinfo} from '@/utils/webauthn'
 
 const INFO_LOGIN = [
   "系统正在使用当前客户端信息重新登录...",
@@ -73,31 +72,19 @@ export default {
         return this.$message("请设置登录名称")
       }
 
-      wlogin({ login })
-      .then(res => {
-        let publicKey = decodeAssert(res.assert);
-        sign  = res.sign
-        login = res.login
-        return navigator.credentials.get({ publicKey })
+      let aurl = this.$bkend_root + '/wauth'
+
+      wauthAuth(aurl, {login})
+      .then(adata=>{
+          this.$message( "令牌登录成功")
+          return this.$store.dispatch('user/login', {_ltype : 1 , user : adata})
       })
-      .then(rdata =>{
-        let assertRes = packPubkey(rdata)
-        return wresponse({...assertRes,sign,login})
-      })
-      .then(oUser => {
-        this.$message( "令牌登录成功")
-        let lparam = {_ltype : 1 , user : oUser}
-        return this.$store.dispatch('user/login', lparam)
-      })
-      .then(cuser => {              
+      .then(cuser=>{
         setRouter(this.$router, this.redirect || '/')
       })
-      .catch( err => {
-        console.log(err)
-        this.$message( "Wauth错误:"+ err.message )
-      })
-      .finally(_=>{
-        
+      .catch(err=>{
+          console.log(err)
+          this.$message( "Wauth错误:"+ err.message )
       })
     },
 

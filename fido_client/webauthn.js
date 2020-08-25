@@ -53,8 +53,8 @@ const base64url = {
  * Decodes arrayBuffer required fields.
  */
 export function decodeCred(credReq){
-    credReq.challenge = base64url.decode(credReq.challenge);
-    credReq.user.id   = base64url.decode(credReq.user.id);
+    credReq.challenge = base64url.decode(credReq.challenge)
+    credReq.user.id   = base64url.decode(credReq.user.id)
 
     return credReq
 }
@@ -63,11 +63,8 @@ export function decodeCred(credReq){
  * Decodes arrayBuffer required fields.
  */
 export function decodeAssert(getAssert) {
-    getAssert.challenge = base64url.decode(getAssert.challenge);
-    
-    for(let allowCred of getAssert.allowCredentials) {
-        allowCred.id = base64url.decode(allowCred.id);
-    }
+    getAssert.challenge = base64url.decode(getAssert.challenge)
+    getAssert.allowCredentials.map( v=> { v.id = base64url.decode(v.id)})
 
     return getAssert
 }
@@ -101,4 +98,104 @@ export function getWinfo() {
 
 export function setWinfo(kdata) {
     localStorage.setItem(WAUTH_KEY, JSON.stringify(kdata));
+}
+
+const DHEADER = {
+    'Content-Type': 'application/json;charset=UTF-8',
+    'Access-Control-Allow-Origin': '*'
+}
+
+const doPost = (wurl,pdata)=>{
+    return new Promise((rv, rj) => {
+        let isTimeOut = false
+        const timeout = setTimeout(() => {
+          isTimeOut = true       
+          rj(new Error("网络请求超时"))
+        }, 5000)
+    
+        let options = {
+            method: 'POST',
+            headers: DHEADER,
+            body: JSON.stringify(pdata)
+        }
+
+        fetch(wurl, options)
+          .then(res => {
+            clearTimeout(timeout)
+    
+            // not ok 
+            if (!res.ok) { throw Error(res.statusText) }
+
+            return res.json()
+          })
+          .then(res => {
+            // data error
+            if (!res.R) { // empty or format error
+                throw Error('500 - 未知错误')
+            } else if ( 2 != (0 | res.R/100 )) { 
+                throw Error(res.C || (res.R+' - 未知错误')) 
+            } else {
+                rv(res.C)
+            }
+          })
+          .catch(err => {
+            console.log("FetchError: " + err.message)
+    
+            // timeout already reject
+            if (!isTimeOut) rj(err)
+          })
+    })
+}
+
+
+// set wauth url by caller 
+const 
+PATH_REG    = "/register",
+PATH_AUTH   = "/login",
+PATH_INFO   = "/uinfo",
+PATH_UNBIND = "/unbind"
+
+export function wauthRegister(wurl,rdata) {
+    let sign,
+    login = rdata.login,
+    wrurl = wurl+PATH_REG
+
+    return doPost(wrurl,rdata)
+    .then(res => {
+      let publicKey = decodeCred(res.cred)
+      sign  = res.sign
+      return navigator.credentials.create({ publicKey })
+    })
+    .then(kdata =>{
+      let credRes = packPubkey(kdata)
+      return doPost(wrurl, {...credRes, login, sign, phase: 2})
+    })
+}
+
+export function wauthAuth(wurl,rdata) {
+    let sign,
+    login = rdata.login,
+    waurl = wurl+PATH_AUTH
+
+    return doPost(waurl,rdata)
+    .then(res => {
+        let publicKey = decodeAssert(res.assert);
+        sign  = res.sign
+        return navigator.credentials.get({ publicKey })
+    })
+    .then(kdata =>{
+        let assertRes = packPubkey(kdata)
+        return doPost(waurl, {...assertRes, login, sign, phase:2})
+    })
+
+}
+
+// wauth unbind
+export function wauthUnbind(wurl,rdata) {
+    return doPost(wurl+PATH_UNBIND,rdata)
+}
+
+// wauth info
+export function wauthInfo(wurl,rdata) {
+    return doPost(wurl+PATH_INFO,rdata)
 }
