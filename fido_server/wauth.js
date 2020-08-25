@@ -10,13 +10,12 @@ msec   = require('../secret'),
 { r_ok, r_err, handle_req}   = require("./index"),
 { getLoginToken }   = require("./auth"),
 cfg = require("../conf"),
-TB_AUTH      = "cm_wauth",
-TB_USER      = "cm_user";
+TB_AUTH      = "cm_wauth";
 
 const ERR_MSG = {
     FORMAT: '客户端响应内容或格式错误!',
     LOGIN : '登录信息错误或缺失',
-    UINFO : '未找到有效用户或认证信息',
+    UINFO : '缺少或未找到有效用户标识',
     RESFORMAT  :'客户端响应内容或格式错误!',
     CHALLENGE  : '挑战或来源信息不匹配!',
     VERIFY     :  '客户端响应验证失败!'
@@ -24,7 +23,7 @@ const ERR_MSG = {
 
 // token time out minute
 const getOne = async (login,gtype=0)=>{
-    let qstr = `select authinfo,status from ${TB_AUTH} where login = $1 limit 1`;
+    let qstr = `select authinfo,status,lcount from ${TB_AUTH} where login = $1 limit 1`;
     let qr = await pdb.query(qstr,[login]);
     if (gtype ==0) {
         return (qr && qr.length>0) ? qr[0].authinfo : null;
@@ -40,7 +39,7 @@ const setOne = async (login,wauth,status)=>{
         qparam = [login];
     } else {
         qstr = `insert into ${TB_AUTH} (login,authinfo,status) values ($1,$2,$3) on conflict (login) 
-        do update set (authinfo,status) = (excluded.authinfo, excluded.status)  returning *`;
+        do update set (authinfo,status,lcount) = (excluded.authinfo, excluded.status,0)  returning *`;
         qparam = [login,wauth,status];
     }
 
@@ -48,8 +47,28 @@ const setOne = async (login,wauth,status)=>{
     return (qr && qr.length>0) ? qr[0].authinfo : null;
 }
 
+const setCount = async (login,lcount)=>{
+    let qstr,qr,qparam;
+
+    qstr = `update  ${TB_AUTH} set lcount=$2 where login = $1 returning *` ;
+
+    qr = await pdb.query(qstr,[login,lcount]);
+    return (qr && qr.length>0) ? qr[0].authinfo : null;
+}
+
+// response check with data, login and challenge sign
+const checkRes = (cparam)=>{
+    let cdata = b64url.decodeObj(cparam.response.clientDataJSON) ;
+
+    // check challenge and origin
+    return (cdata.origin === cfg.WAUTH.origin && msec.crcSign(cdata.challenge+cparam.login,cparam.sign)) 
+        ? null 
+        : ERR_MSG.CHALLENGE;
+
+}
+
 exports.post = async (eparam,f_cb) =>{
-    let ainfo, qparam, rlist,
+    let ainfo, phase, result, 
     action  = eparam._action; 
     
     let 
@@ -59,83 +78,51 @@ exports.post = async (eparam,f_cb) =>{
     switch (action) {
         case "uinfo":
             ainfo = await getOne(login,1);
-
-            if (!ainfo) {
-                rr.C = { status: -1 }
-            } else {
-                rr.C = { status: ainfo.status };
-            }
-
+            rr.C = { status: ((!ainfo) ? -1 : ainfo.status) };
         break;
+
         case "register":
+            if(!login) return f_cb(r_err( ERR_MSG.UINFO));
+            phase = eparam.phase || 1;
+
             // check exist 
             ainfo = await getOne(login);
-            if (ainfo && ainfo.registered) {
-                return f_cb(r_err( `用户 ${login} 已经存在并注册`));
-            };
-
-            ainfo  = {
-                id   : crypto.randomBytes(16).toString("hex"),
-                name : eparam.name,
-                registered: false, // set true after response ok
-                authenticators: []
-            };
-
-            // new or reset 
-            await setOne(login,ainfo,0);
-
-            // user format must be 
-            let challengeMakeCred = genCredRequest({ 
-                id: ainfo.id,
-                name: login, 
-                displayName: eparam.name, 
-            }, cfg.WAUTH.party);
-
-            rr = r_ok({
-                cred : challengeMakeCred,
-                sign : msec.crcSign(challengeMakeCred.challenge)
-            });
-        break;
-        case "login":
-            if(!login) {
-                return f_cb(r_err( '缺少登录信息！'));
-            }
+            if (phase == 1) { // register quest
+                if (ainfo && ainfo.registered) {
+                    return f_cb(r_err( `用户 ${login} 已经存在并注册`));
+                };
     
-            ainfo = await getOne(login);
-            if (!(ainfo && ainfo.registered)) {
-                return f_cb(r_err(`用户 ${login} 不存在或未激活!`));
-            }
+                ainfo  = {
+                    id   : crypto.randomBytes(16).toString("hex"),
+                    name : eparam.name,
+                    registered: false, // set true after response ok
+                    authenticators: []
+                };
     
-            // response assertion by get ator
-            let wassert  = genAssertion(ainfo.authenticators);
-            rr = r_ok({
-                assert: wassert,
-                sign: msec.crcSign(wassert.challenge),
-                login: login
-            });
-        break;
-        case "response":
-            // webauthn Content from base64 url 
-            let result,
-            waResponse = eparam.response,
-            cdata = b64url.decodeObj(waResponse.clientDataJSON) ;
+                // new or reset 
+                await setOne(login,ainfo,0);
+    
+                // user format must be 
+                let challengeMakeCred = genCredRequest({ 
+                    id: ainfo.id,
+                    name: login, 
+                    displayName: eparam.name, 
+                }, cfg.WAUTH.party);
 
-            // check challenge and origin
-            if(cdata.origin !== cfg.WAUTH.origin || !msec.crcSign(cdata.challenge,eparam.sign)) {
-                return f_cb(r_err(ERR_MSG.CHALLENGE));
-            }
+                rr = r_ok({
+                    cred : challengeMakeCred,
+                    sign : msec.crcSign(challengeMakeCred.challenge+login)
+                });
+            } else if (phase ==2 ) { // response
+                // original and challange
+                result = checkRes(eparam);
+                if (result) return f_cb(r_err(ERR_MSG.VERIFY));
 
-            ainfo = await getOne(login);
+                result = veriAttestRes(eparam.response);
 
-            rr = r_ok();
-            // for register
-            if(waResponse.attestationObject !== undefined) { 
-                /* This is create cred register OK */
-                result = veriAttestRes(waResponse);
-
-                if(result.verified) { // ok and save 
+                if(result) { // ok and save 
                     // add authinfo to list
-                    ainfo.authenticators.push(result.authrInfo);
+                    ainfo.authenticators.push(result);
                     ainfo.registered = true;
 
                     // save uinfo
@@ -147,13 +134,40 @@ exports.post = async (eparam,f_cb) =>{
                 } else {
                     rr = r_err(ERR_MSG.VERIFY);
                 }
-                
-            // for login
-            } else if (waResponse.authenticatorData !== undefined) { 
-                result = veriAssertRes(eparam.id, waResponse, ainfo.authenticators);
+            } else {
+                rr = r_err(ERR_MSG.FORMAT);
+            }
 
-                if (result && result.verified) {
-                    // verify ok get user token
+        break;
+        case "login":
+            if(!login) return f_cb(r_err( ERR_MSG.UINFO));
+
+            phase = eparam.phase || 1;
+            // check exist 
+            ainfo = await getOne(login);
+            if (phase == 1) { // register quest
+                if (!(ainfo && ainfo.registered)) {
+                    return f_cb(r_err(`用户 ${login} 不存在或未激活!`));
+                }
+        
+                // response assertion by get ator
+                let wassert  = genAssertion(ainfo.authenticators);
+                rr = r_ok({
+                    assert: wassert,
+                    sign: msec.crcSign(wassert.challenge+login),
+                    login: login
+                });
+            } else if (phase == 2) {
+                // orginal & challenge sign check 
+                result = checkRes(eparam);
+                if (result) return f_cb(r_err(ERR_MSG.VERIFY));
+
+                // data verify
+                result = veriAssertRes(eparam.id, eparam.response, ainfo.authenticators, ainfo.lcount);
+                if (result.verified) {  // verify ok get user token
+                    // update authcounter
+                    setCount(login,result.lcount);
+
                     let ut = await getLoginToken({ login, ipaddr: eparam._ipaddr });
                     if (ut) {
                         rr.C = ut;
@@ -163,11 +177,11 @@ exports.post = async (eparam,f_cb) =>{
                 } else {
                     rr = r_err(ERR_MSG.VERIFY);
                 }
-            // unknow action 
             } else {
-                rr = r_err(ERR_MSG.RESFORMAT);
+                rr = r_err(ERR_MSG.FORMAT);
             }
         break;
+
         case "unbind":
             ainfo = await getOne(login);
             if (ainfo) {
@@ -376,15 +390,14 @@ let veriAttestRes = (waResponse) => {
         return response;
 
     let authObj = parseAuthData(ctapMakeCredResp.authData);
-
     if(!(authObj.flags & U2F_USER_PRESENTED))
         throw new Error('User was NOT presented durring authentication!');
 
-    let clientDataHash  = hash(b64url.toBuffer(waResponse.clientDataJSON))
-    let publicKey       = COSEECDHAtoPKCS(authObj.COSEPublicKey)
-
-    let PEMCertificate = ASN1toPEM(ctapMakeCredResp.attStmt.x5c[0]);
     let signature      = ctapMakeCredResp.attStmt.sig;
+    let PEMCertificate = ASN1toPEM(ctapMakeCredResp.attStmt.x5c[0]);
+
+    let publicKey       = COSEECDHAtoPKCS(authObj.COSEPublicKey);
+    let clientDataHash  = hash(b64url.toBuffer(waResponse.clientDataJSON));
 
     if(ctapMakeCredResp.fmt === 'fido-u2f') {
         let reservedByte    = Buffer.from([0x00]);
@@ -424,16 +437,12 @@ let veriAttestRes = (waResponse) => {
                 : true);
     }
 
-    if(response.verified) {
-        response.authrInfo = {
-            fmt: 'fido-u2f',
-            publicKey: b64url.encode(publicKey),
-            counter: authObj.counter,
-            credID: b64url.encode(authObj.credID)
-        }
-    }
-
-    return response
+    return response.verified ? {
+        fmt: 'fido-u2f',
+        publicKey: b64url.encode(publicKey),
+        counter: authObj.counter,
+        credID: b64url.encode(authObj.credID)
+    } : null;
 }
 
 /**
@@ -467,7 +476,7 @@ let parseGetAssertAuthData = (buffer) => {
 }
 
 // verify assert response
-let veriAssertRes = (rid, waResponse, authenticators) => {
+let veriAssertRes = (rid, waResponse, authenticators,lcount) => {
     let authr = findAuthr(rid, authenticators);
     let authenticatorData = b64url.toBuffer(waResponse.authenticatorData);
 
@@ -475,8 +484,15 @@ let veriAssertRes = (rid, waResponse, authenticators) => {
     if(authr.fmt === 'fido-u2f') {
         let authObj  = parseGetAssertAuthData(authenticatorData);
 
-        if(!(authObj.flags & U2F_USER_PRESENTED))
-            throw new Error('User was NOT presented durring authentication!');
+        if(authObj.counter <= lcount) {
+            response.err = "Authr counter did not increase!";
+            return response;
+        }
+
+        if(!(authObj.flags & U2F_USER_PRESENTED)) {
+            response.err = "User was NOT presented durring authentication!";
+            return response;
+        }
 
         let clientDataHash   = hash(b64url.toBuffer(waResponse.clientDataJSON))
         let signatureBase    = Buffer.concat([authObj.rpIdHash, authObj.flagsBuf, authObj.counterBuf, clientDataHash]);
@@ -484,14 +500,14 @@ let veriAssertRes = (rid, waResponse, authenticators) => {
         let publicKey = ASN1toPEM(b64url.toBuffer(authr.publicKey));
         let signature = b64url.toBuffer(waResponse.signature);
 
-        response.verified = verifySignature(signature, signatureBase, publicKey)
-
-        if(response.verified) {
-            if(response.counter <= authr.counter)
-                throw new Error('Authr counter did not increase!');
-
-            authr.counter = authObj.counter
+        response.verified = verifySignature(signature, signatureBase, publicKey);
+        if (response.verified) {
+            response.lcount = authObj.counter;
+        } else {
+            response.err = "VerifySignature False!";
         }
+    } else {
+        response.err = "Unknow Format!";
     }
 
     return response
