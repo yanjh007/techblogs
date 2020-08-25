@@ -4,6 +4,7 @@ Client Readme
 
 并整合为register和auth两个主要方法，在内部处理响应请求。
 
+注册、信息和解绑示例见setting vue 文件，登录示例见loginw vue文件
 
 
 
