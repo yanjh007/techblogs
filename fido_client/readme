@@ -1,1 +1,10 @@
 Client Readme
+
+使用单个的工具模块，整合了post、base64和编码解码转换方法。
+
+并整合为register和auth两个主要方法，在内部处理响应请求。
+
+
+
+
+
