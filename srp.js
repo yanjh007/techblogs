@@ -19,7 +19,7 @@ const SRP_PARAM = {
             68EDBC3C 05726CC0 2FD4CBF4 976EAA9A FD5138FE 8376435B 9FC61D2F C0EB06E3`
             ),16),
         G: bn(2),
-        H: 'sha1'
+        H: 'sha256'
     },
     2048: {
         L: 2048,
@@ -41,36 +41,35 @@ const SRP_PARAM = {
 
 // ustore for client and server single user
 const USTORE = {
-    id: "yanjh",
-    passwd: "password123"
+    id: "颜建华",
+    passwd: "密码2020"
 }
-
 
 // getX from id and passwd with salt
 // x = hash(salt+hash(I:P))
 const  getX = (param, U, salt)=> {
-    let I = Buffer.from(U.id);
-    let P = Buffer.from(U.passwd);
     salt  = Buffer.from(salt,"hex");
 
     // getx
-    let hashIP = crypto.createHash(param.H).update(Buffer.concat([I, Buffer.from(':'), P])).digest();
-    return  crypto.createHash(param.H).update(salt).update(hashIP).digest("hex");
+    let hashIP = crypto.createHash(param.H).update(U.id+":"+U.passwd).digest();
+    let x = crypto.createHash(param.H).update(salt).update(hashIP).digest("hex");
+    return x;
 }
 
-// computer verifier from salt, identy and password 
+// computer verifier from salt, identy and password , save as base36
 // salt = random(8)
 // v = G ^ x % N
 const  getV = (param, U)=> {
 
     // genarate a salt 
     let salt = crypto.randomBytes(8).toString("hex");
+    // let salt = "abcd12345678dcba"; // just for test
 
     // compute x 
     let x = getX(param,U,salt);
 
     // compute v from x
-    let v = param.G.modPow(bn(x,16),param.N).toString(16);
+    let v = param.G.modPow(bn(x,16),param.N).toString(36);
 
     return { salt, v };
 };
@@ -103,7 +102,7 @@ const s1 =(param, req)=>{
 
     // let u = crypto.randomBytes(16).toString("hex");
     let b = crypto.randomBytes(16).toString("hex");
-    let v = bn(USTORE.v,16);
+    let v = bn(USTORE.v,36);
     let B = param.h.multiply(v).add(param.G.modPow(bn(b,16),param.N)).toString(16);
 
     // generat u 
@@ -118,9 +117,7 @@ const s1 =(param, req)=>{
     USTORE.B = B;
 
     // computer Server K
-    let A1 = bn(A,16).multiply(v.modPow(bn(u,16),param.N));
-    // let A1 = bn(A,16).multiply(v.pow(bn(u,16)));
-    
+    let A1 = bn(A,16).multiply(v.modPow(bn(u,16),param.N));    
     let K1 = A1.modPow(bn(b,16),param.N).toString(16);
     USTORE.KS = crypto.createHash(param.H).update(Buffer.from(K1,"hex")).digest("hex") ;
 
@@ -204,11 +201,10 @@ const cfinal =(param, req)=>{
     return { result:mc == ms };
 }
 
-
 // simulation srp proectss
 const test = ()=> {
     // algo pram prepared fact 
-    const cparam = SRP_PARAM[2048];
+    const cparam = SRP_PARAM[1024];
     cparam.h = bn(crypto.createHash(cparam.H)
         .update(Buffer.from(cparam.G.toString(16)),"hex")
         .update(Buffer.from(cparam.N.toString(16)),"hex")
@@ -239,6 +235,9 @@ const test = ()=> {
 
     let cf = cfinal(cparam,r2);
     console.log("Client Final:",cf);
+    
+    console.log("K:",USTORE.KS);
+
 
     console.log("------------ finished  -------------",cf);
 
